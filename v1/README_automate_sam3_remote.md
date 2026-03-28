@@ -36,6 +36,8 @@ For local terminal monitoring, this repo also includes:
 - `samtop.bat` for Windows
 - `samtop.sh` for Ubuntu/Linux
 
+The remote pipeline now defaults to `100` frames per chunk to reduce GPU memory pressure. You can override that with `SAM3_CHUNK_FRAMES`.
+
 ## Requirements
 
 Local machine:

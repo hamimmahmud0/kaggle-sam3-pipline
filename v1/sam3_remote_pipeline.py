@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import gc
 import gzip
 import json
 import os
@@ -18,6 +19,7 @@ except ImportError:
     import msvcrt
 
 import numpy as np
+import torch
 from pycocotools import mask as mask_utils
 from sam3.model.sam3_video_predictor import Sam3VideoPredictor
 
@@ -36,7 +38,7 @@ ENV_PREFIX = MINIFORGE_ROOT / "envs" / "sam3"
 MEGA_ROOT = "/SAM3"
 MEGA_RESULTS_ROOT = "/SAM3/results"
 PROMPTS = ["vehicle", "person", "animal", "road", "building", "wheel"]
-CHUNK_FRAMES = 200
+CHUNK_FRAMES = int(os.environ.get("SAM3_CHUNK_FRAMES", "100"))
 LOW_DISK_BYTES = 4 * 1024**3
 CHECKPOINT_PATH = "/root/.cache/huggingface/hub/models--facebook--sam3/snapshots/3c879f39826c281e95690f02c7821c4de09afae7/sam3.pt"
 BPE_PATH = "/kaggle/working/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
@@ -59,6 +61,21 @@ def worker_pid_path(worker_name: str) -> Path:
 def ensure_dirs():
     for path in [WORKSPACE_ROOT, LOGS_DIR, TMP_DIR, RESULTS_LOCAL_DIR]:
         path.mkdir(parents=True, exist_ok=True)
+
+
+def release_cuda_memory():
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    if hasattr(torch.cuda, "ipc_collect"):
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
 
 def run_cmd(args, check=True, capture=False, env=None):
@@ -379,7 +396,7 @@ def claim_next_item(worker_name):
         if existing is not None:
             return get_item(session, existing["manifest_index"]), session
         for item in session["items"]:
-            if item["status"] == "completed":
+            if item["status"] in {"completed", "failed"}:
                 continue
             if item.get("claim") is not None:
                 continue
@@ -649,7 +666,10 @@ def run_chunk(predictor, chunk_path: Path, prompt: str):
             )
         return frames
     finally:
-        predictor.handle_request({"type": "close_session", "session_id": session_id})
+        try:
+            predictor.handle_request({"type": "close_session", "session_id": session_id})
+        finally:
+            release_cuda_memory()
 
 
 def write_chunk_result(item, prompt, chunk_index, chunk_file, frames):
@@ -714,12 +734,15 @@ def process_item(worker_name, item):
                         "".join(traceback.format_exception_only(type(exc), exc)).strip(),
                     )
                     raise
+                finally:
+                    release_cuda_memory()
             note_prompt_complete(item["manifest_index"], prompt)
         release_item(worker_name, item["manifest_index"], final_status="completed")
         cleanup_video_assets(dav_path, mp4_path, chunk_dir)
         return True
     finally:
         del predictor
+        release_cuda_memory()
 
 
 def worker_loop(worker_name, gpu):
@@ -741,6 +764,7 @@ def worker_loop(worker_name, gpu):
                 final_status="failed",
                 error_text="".join(traceback.format_exception(exc)).strip(),
             )
+            release_cuda_memory()
             continue
 
 

@@ -46,6 +46,8 @@ This repo supports both Windows and Ubuntu/Linux for the local control machine.
 
 The remote notebook side is still Linux-based and expects Bash there.
 
+The remote pipeline now defaults to `100` frames per chunk to reduce GPU memory pressure. You can override that with `SAM3_CHUNK_FRAMES`.
+
 ## Requirements
 
 Local machine:

@@ -29,3 +29,6 @@ htmlcov/
 Thumbs.db
 .vscode/
 .idea/
+.env
+.codex
+.env

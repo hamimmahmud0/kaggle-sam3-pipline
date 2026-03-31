@@ -93,12 +93,12 @@ def release_cuda_memory():
             LOGGER.debug("torch.cuda.ipc_collect() failed", exc_info=True)
 
 
-def run_cmd(args, check=True, capture=False, env=None):
+def run_cmd(args, check=True, capture=False, env=None, timeout=None):
     kwargs = {"text": True}
     if capture:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    proc = subprocess.run(args, env=env, **kwargs)
+    proc = subprocess.run(args, env=env, timeout=timeout, **kwargs)
     if check and proc.returncode != 0:
         LOGGER.error("command failed rc=%s cmd=%s", proc.returncode, " ".join(map(str, args)))
         raise RuntimeError(
@@ -579,8 +579,9 @@ def probe_duration_seconds(path: Path) -> float | None:
         return None
 
 
-def probe_frame_count(path: Path) -> int | None:
-    proc = run_cmd(
+def probe_frame_count(path: Path, timeout: int = 15) -> int | None:
+    try:
+        proc = run_cmd(
         [
             "ffprobe",
             "-v",
@@ -596,7 +597,11 @@ def probe_frame_count(path: Path) -> int | None:
         ],
         check=False,
         capture=True,
+        timeout=timeout,
     )
+    except subprocess.TimeoutExpired:
+        LOGGER.warning("ffprobe timed out chunk=%s timeout=%ss", path, timeout)
+        return None
     if proc.returncode != 0:
         return None
     try:
@@ -605,13 +610,24 @@ def probe_frame_count(path: Path) -> int | None:
         return None
 
 
-def chunks_need_regeneration(chunk_files: list[Path]) -> bool:
+def chunk_files_look_usable(chunk_files: list[Path]) -> bool:
     if not chunk_files:
-        return True
+        return False
     if len(chunk_files) == 1:
         LOGGER.warning("chunk validation failed reason=single_chunk")
+        return False
+    return all(chunk_file.is_file() and chunk_file.stat().st_size > 0 for chunk_file in chunk_files)
+
+
+def chunks_need_regeneration(chunk_files: list[Path], verify_frame_counts: bool = True) -> bool:
+    if not chunk_files_look_usable(chunk_files):
         return True
-    for index, chunk_file in enumerate(chunk_files):
+    if not verify_frame_counts:
+        return False
+
+    sample_indices = sorted({0, len(chunk_files) // 2, len(chunk_files) - 1})
+    for index in sample_indices:
+        chunk_file = chunk_files[index]
         frame_count = probe_frame_count(chunk_file)
         if frame_count is None:
             LOGGER.warning("chunk validation failed reason=missing_frame_count chunk=%s", chunk_file)
@@ -807,7 +823,7 @@ def ensure_local_video_assets(item):
         note_preprocessing_state(item["manifest_index"], status="converted", conversion_progress_pct=100.0)
         LOGGER.info("converted mp4 manifest_index=%s path=%s", item["manifest_index"], mp4_path)
     chunk_files = sorted(chunk_dir.glob("chunk_*.mp4"))
-    if chunks_need_regeneration(chunk_files):
+    if chunks_need_regeneration(chunk_files, verify_frame_counts=True):
         if chunk_files:
             LOGGER.info(
                 "regenerating invalid chunks manifest_index=%s chunk_dir=%s existing=%s",
@@ -856,7 +872,7 @@ def ensure_local_video_assets(item):
             ]
         )
         chunk_files = sorted(chunk_dir.glob("chunk_*.mp4"))
-    if chunks_need_regeneration(chunk_files):
+    if chunks_need_regeneration(chunk_files, verify_frame_counts=False):
         raise RuntimeError(f"no chunks created for {mp4_path}")
     note_preprocessing(item["manifest_index"], dav_path, mp4_path, chunk_dir, len(chunk_files))
     note_preprocessing_state(item["manifest_index"], status="ready")

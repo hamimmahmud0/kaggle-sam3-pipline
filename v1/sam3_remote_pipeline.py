@@ -78,12 +78,12 @@ def release_cuda_memory():
             pass
 
 
-def run_cmd(args, check=True, capture=False, env=None):
+def run_cmd(args, check=True, capture=False, env=None, timeout=None):
     kwargs = {"text": True}
     if capture:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    proc = subprocess.run(args, env=env, **kwargs)
+    proc = subprocess.run(args, env=env, timeout=timeout, **kwargs)
     if check and proc.returncode != 0:
         raise RuntimeError(
             f"command failed ({proc.returncode}): {args}\n"
@@ -599,7 +599,7 @@ def ensure_local_video_assets(item):
             ]
         )
     chunk_files = sorted(chunk_dir.glob("chunk_*.mp4"))
-    if not chunk_files:
+    if len(chunk_files) <= 1:
         run_cmd(
             [
                 "ffmpeg",
@@ -620,7 +620,8 @@ def ensure_local_video_assets(item):
             ]
         )
         chunk_files = sorted(chunk_dir.glob("chunk_*.mp4"))
-    if not chunk_files:
+    chunk_files = [path for path in chunk_files if path.is_file() and path.stat().st_size > 0]
+    if len(chunk_files) <= 1:
         raise RuntimeError(f"no chunks created for {mp4_path}")
     note_preprocessing(item["manifest_index"], dav_path, mp4_path, chunk_dir, len(chunk_files))
     return dav_path, mp4_path, chunk_dir, chunk_files
